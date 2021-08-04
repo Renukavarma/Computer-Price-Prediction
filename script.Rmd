@@ -1,0 +1,231 @@
+
+```{r setup}
+#options(width=100)
+#knitr::opts_chunk$set(out.width='1000px',dpi=200,message=FALSE,warning=FALSE)
+install.packages("knitr")
+knitr::opts_chunk$set(message=FALSE,warning=FALSE)
+
+#load packages and csv file
+install.packages('ggplot2', dep = TRUE)
+install.packages('dplyr', dep = TRUE)
+install.packages('gridExtra', dep = TRUE)
+install.packages('corrplot', dep = TRUE)
+install.packages('corrgram', dep = TRUE)
+install.packages('caret', dep = TRUE)
+install.packages('psych', dep = TRUE)
+install.packages('caretEnsemble', dep = TRUE)
+install.packages('ggfortify', dep = TRUE)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(corrplot)
+library(corrgram)
+library(caret)
+library(psych)
+library(caretEnsemble)
+library(ggfortify)
+```
+
+#Intro
+
+* Features are : `price`, `speed`, `hd`, `ram`, `screen`, `cd`, `multi`, `premium`, `ads` and  `trend`
+* Goal : `price` = f(`speed`, `hd`, `ram`, `screen`, `cd`, `multi`, `premium`, `ads`, `trend`)
+* details : `cd`, `multi`, `premium` are categorical features with `yes`, `no` levels
+
+#Data exploration
+```{r}
+df = read.csv('C:/Users/chandana/Desktop/Computers.csv',sep=',')
+str(df)
+df$X<-NULL
+any(is.na(df))
+```
+no NA's
+```{r}
+numFeatures<-c('price','speed','hd','ram','screen','ads','trend')
+catFeatures<-c('cd','multi','premium')
+listPlot<-list()
+cnt<-0
+for(feature in catFeatures){
+  for(j in 2:length(numFeatures)){
+    cnt<-cnt+1
+    x = numFeatures[1]
+    y= numFeatures[j]
+    listPlot[[cnt]]<-ggplot(data=df,aes_string(x,y,color=feature)) + 
+      geom_point(size=1,alpha=.5) + 
+      theme(legend.position='top',axis.title = element_text(size=10)) + 
+      scale_color_manual(name=feature,values = c("#EBCC2A", "#46ACC8"))
+  }
+}
+```
+```{r,fig.width=12, fig.height=8, fig.align='center'}
+do.call(grid.arrange, c(listPlot, ncol=6))
+```
+
+##Correlation matrix
+```{r}
+corrplot(cor(df %>% select_if(is.numeric) ,method='pearson'),method='square',order="AOE",tl.cex=1)
+```
+
+The linear relationship between `price` vs. `ram`, `price` vs. `screen`,  `price` vs. `hd` amd  `price` vs. `speed` seen in previous section is also seen here with positive correlation for these features. 
+
+#Models testing
+##making dummies
+
+```{r}
+#select numerical features
+num_data<-df %>% select_(.dots = numFeatures)
+
+#join with dummy variables (-1 for the dummy trap)
+res<-as.data.frame(cbind(
+  num_data,
+  'cd'= dummy.code(df$cd)[,-1],
+  'multi'= dummy.code(df$multi)[,-1],
+  'premium' = dummy.code(df$premium)[,-1]))
+head(res)
+```
+
+##Split data into `train`/`test` samples
+
+```{r}
+set.seed(1234)
+split <- createDataPartition(y=res$price, p = 0.75, list = FALSE)
+train <- res[split,]
+test <- res[-split,]
+```
+
+##Evaluation/ Cross-Validation on the `train` sample with different regressors
+```{r}
+#list of classifiers
+1
+```
+
+##Results - Plots
+```{r}
+names<-c()
+for(i in 1:length(res)){
+	names[i]<-res[[i]]$method
+}
+
+results<-resamples(list('ridge'=res[[1]],"lasso"=res[[2]],"lm"=res[[3]],"lars"=res[[4]],"enet"=res[[5]],"lmStepAIC"=res[[6]],"svmLinear"=res[[7]],"gbm"=res[[8]],"rf"=res[[9]]))
+bwplot(results,scales = list(relation = "free"),xlim = list(c(0,300), c(0,1)))
+summary(results)
+
+timingData<-data.frame('classifier'=names,'val' = timing)
+ggplot(data=timingData,aes(x=reorder(classifier,val),y=val)) + 
+  geom_bar(stat='identity') + 
+  coord_flip() + 
+  xlab('') + ylab('Time [sec]')
+```
+
+Comments :
+
+Here is the dilemna :
+
+* a `RandomForest regressor` gives the best result (in term of R^2 and RMSE) compared to all the other classifiers test but the CPU time is terrible (300sec --> 5 minutes)
+* all the same class `linear` models (`lm`,`lasso`,`ridge`,`elasticnet`,`lars`) give similar (and lower) results
+* maybe a good compromise performances/CPU time would be `GBM` (stochastic gradient boosting)
+
+##Utils
+```{r}
+plotResults<-function(mod){
+  PRED<-data.frame('Prediction'= predict(mod,test),'True' = test$price)
+  g1<-ggplot(data=PRED,aes(x=Prediction,y=True)) + geom_point() + geom_smooth(method='lm')
+  g2<-ggplot(data=PRED,aes(x=Prediction-True)) + geom_histogram(bins=50)
+  grid.arrange(g1,g2,nrow=1)
+  #calculate metrics
+  mse <- mean((PRED$True-PRED$Prediction)^2)
+  rmse<-mse^0.5
+  SSE = sum((PRED$Pred - PRED$True)^2)
+  SST = sum( (mean(test$price) - PRED$True)^2)
+  R2 = 1 - SSE/SST
+  sprintf("MSE: %f RMSE : %f R2 :%f", mse,rmse,R2)
+}
+```
+
+##Results with `RandomForest` on the `test` sample
+```{r}
+plotResults(res[[9]])
+```
+
+#Tuning `GBM`
+
+There are 4 hyperparamters to test with `GBM`:
+
+* `n.trees` from 100 to 1000 ; step = 100
+* `shrinkage` from 0.1 to 1 , step = 0.1
+* `interaction.depth` from 1 to 9 (max number of features), step = 1
+* `n.minobsinnode` from 1 to 10, step = 1
+
+```{r,eval=F}
+tunegrid <- expand.grid(n.trees = seq(100,1000,100), shrinkage = seq(.1,1,.1), interaction.depth = seq(1,9,1),n.minobsinnode=seq(1,10,1))
+```
+
+_Note : the code below is not run since it takes a long time to run all the combinations._
+
+The best set of hyperparameters was found to be :
+
+```{r,eval=T}
+#tuned
+finalTune = expand.grid(n.trees = 1000, shrinkage = 0.1, interaction.depth = 7,n.minobsinnode=1)
+gbm_tuned<-train(price ~., data = train,method='gbm',tuneGrid = finalTune, trControl = trControl,preProcess=c('center', 'scale'))
+```
+
+```{r}
+plotResults(gbm_tuned)
+```
+
+Comments :
+
+* clear improvement compared to the default setting of `GBM`
+* performances better than `RF`
+
+#Ensemble models
+
+We can try to improve the performances of identical classifiers by blending them.
+My first attempt was to blend the `linear` models :
+
+```{r}
+
+```
+
+However it gives a highly correlated list of classifiers. They may not be a good candidates good for an ensemble because their predictions are highly correlated.
+
+```{r}
+corrplot(modelCor(resamples(models)),method='number')
+```
+
+Anyway we can still look at the final result, which does not provide a significant improvement over a single classifier (the resulting RMSE is a bit lower than the individual RMSE) :
+
+```{r}
+ens <- caretEnsemble(models)
+summary(ens)
+```
+
+The same exercise with non-linears regressors gives :
+
+```{r,eval=T}
+modelsNonLinear<-caretList(x=train[-1],y=train$price,preProcess=c('center','scale'),
+                            trControl=trainControl(method="cv",number=10,repeats=3), 
+                            metric="RMSE",
+                            methodList=c("gbm","rf"))
+
+print(modelCor(resamples(modelsNonLinear)),method='number')
+
+ensNL <- caretEnsemble(modelsNonLinear)
+summary(ensNL)
+```
+
+* These 2 classifiers are less correlated (0.61) and an ensemble made of them gives a better RMSE (161.1 vs. 162.6(`rf`) and 195.1(`gbm`))
+
+```{r}
+plotResults(ensNL)
+```
+
+<hr>
+<strong>History :</strong>
+
+* _version 1 : initial commit_ 
+* _version 2 : added better regressors_ 
+* _version 3 : added GBM tuning and ensemble classifiers_
+
+<hr>
